@@ -78,11 +78,13 @@ header {
 
 /* set up layout */
 html {display:flex; flex-direction: row; justify-content: center;}
-body {display:flex; flex-direction: column; justify-content: space-between; min-height: 100vh; align-items: center; width: 100%; padding: 0 0.5rem;}
-header {display:flex; flex-direction: row; justify-content: space-between; align-items: center; margin: 0; }
+body {display:flex; flex-direction: column; justify-content: space-between; min-height: 100vh; align-items: center; width: 100%; }
+header {display:flex; flex-direction: row; justify-content: space-between; align-items: center; margin: 0 0.5rem; }
 nav {display:flex; gap: 1rem;}
 .main_content {max-width: 720px; }
 .site_info {display:flex; flex-direction: row; align-items: center; gap: 1rem;}
+
+main {margin: 0 0.5rem;}
 
 @media (max-width: 640px) {
   header {flex-direction: column;}
