@@ -22,35 +22,26 @@
       </nav>
     </header>
     <main>
-      <p>
-        Hey! I'm Stefan. Welcome to my blog. I work primarily on compiler performance verification work, and
-        I write about things that generally interest me at the time. Enjoy!
-      </p>
-      <h1>My Posts</h1>
-      <div class="post">
-        <h2>Exploring Suboptimal Lattice Transfer Functions in LLVM</h2>
-        <p class="post_date">December 5, 2024</p>
-        <p> Transfer functions for abstract lattices are what allows many analyses such as LLVM's Known
-          Bits analysis to give correct information. However, by operating in the abstract domain, these
-          transfer functions leave possible information on the table, and I explore this with the example
-          of saturated signed addition.
-        </p>
-        <a href="/blog/3" class="read_more">WIP</a>
-      </div>
-      <div class="post">
-        <h2>Brainfuck Optimizations</h2>
-        <p class="post_date">November 10, 2024</p>
-        <p>Brainfuck is an infamous esoteric language, but there are unique optimizations that can be performed on
-          it, such as vector scan optimizations for loops like <code>[&gt;&gt;]</code>, that can improve performance 
-          beyond what an LLVM backend can achieve natively.
-        </p>
-        <a href="/blog/2" class="read_more">Read More</a>
-      </div>
-      <div class="post">
-        <h2>CUDA Load Batching</h2>
-        <p class="post_date">June 17, 2024</p>
-        <p>Still porting over to this site.</p>
-        <a href="/blog/1" class="read_more">WIP</a>
+      <h1>Publications</h1>
+      <div class="publication">
+        <h2>Translation Validation for LLVM’s AArch64 Backend</h2>
+        <p class="post_date">In preparation - TOPLAS</p>
+        <p>ARM-TV is a translation validation tool for LLVM’s AArch64 backend. This tool works by taking a function in LLVM
+          IR and processing it in three phases. First, LLVM lowers it to assembly. Second, ARM-TV lifts the assembly back to
+          LLVM IR. Finally, Alive2 verifies that the lifted IR refines the original IR. This paper found 38 miscompilation bugs. My
+          biggest contribution was implementing the semantics for dozens of ARM instructions as SMT constraints.</p>
+          <a href="" class="read_more">In preparation</a>
+        </div>
+      <div class="publication">
+        <h2>Minotaur: A SIMD-Oriented Synthesizing Superoptimizer</h2>
+        <p class="post_date">OOPSLA 2024 - <strong>Distinguished Paper Award</strong></p>
+        <p>Minotaur is a superoptimizing LLVM pass that uses program synthesis to improve the quality of its code generation,
+          with a specific focus on integer and floating-point SIMD code. On an Intel Cascade Lake processor, Minotaur achieves an
+          average speedup of 7.3% on the GNU Multiple Precision library (GMP)'s benchmark suite, with a maximum speedup of
+          13%. On SPEC CPU 2017, Minotaur produces an average speedup of 1.5%, with a maximum speedup of 4.5% for
+          638.imagick. My largest contribution was creating a large C++ testing framework to ensure the correctness of our
+          semantics using a custom just-in-time compiler with support for AVX-512 intrinsics.</p>
+        <a href="https://dl.acm.org/doi/10.1145/3689766" class="read_more">Read Publication</a>
       </div>
     </main>
   </div>

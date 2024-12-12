@@ -1,0 +1,167 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/static/main.css">
+
+<title>
+  Stefan Mada
+</title>
+
+<body>
+  <div class="main_content">
+    <header>
+      <div class="site_info">
+        <img height="64px" src="/static/logo.png">
+        <div class="title_info">
+          <h1>Stefan Mada</h1>
+          <p>Languages, Compilers, and more!</p>
+        </div>
+      </div>
+      <nav>
+        <a href="/">Home</a>
+        <a href="/publications">Publications</a>
+      </nav>
+    </header>
+    <main>
+      <h1 id="brainfuck-optimizations">Brainfuck Optimizations</h1>
+      <p><a href="https://en.wikipedia.org/wiki/Brainfuck">Brainfuck</a> (BF) is an esoteric programming language created in 1993 by Swiss student Urban Müller, and is extremely simple with only eight instructions. The language essentially defines a turing machine, with
+      the main and only abstraction being a tape and a pointer that can read and write to it. Here are the 8 instructions that exist in the language:</p>
+      <ul>
+      <li><code>&lt;</code> - Shift tape pointer left</li>
+      <li><code>&gt;</code> - Shift tape pointer right</li>
+      <li><code>+</code> - Increment value at tape</li>
+      <li><code>-</code> - Decrement value at tape</li>
+      <li><code>.</code> - Print the value at the tape pointer as an ASCII character to standard out</li>
+      <li><code>,</code> - Read an ASCII character from standard in and write its representation to the tape</li>
+      <li><code>[</code> - Jump If Zero, which jumps to the matching <code>]</code> instruction when the tape reads 0</li>
+      <li><code>]</code> - Jump Unless Zero, which jumps to the matching <code>[</code> instruction when the tape does not read 0</li>
+      </ul>
+      <p>The tape is as large as you can make it, is initialized to zero, and each cell
+      can store values from 0-255. This was <a href="https://github.com/sunjay/brainfuck/blob/master/brainfuck.md">the spec</a> I followed.</p>
+      <p>These instructions give us a turing complete language, with some relatively complex
+      programs existing, such as a Sudoku solver.</p>
+      <h2 id="but-why-use-this-language">But Why Use This Language?</h2>
+      <p>This language allows getting to the most interesting parts of compiler development,
+      namely that of optimizations, without needing to spend a large amount of time
+      writing a tokenizer and a parser. Parsing is effectively trivial, and getting
+      an interpreter working for this language only took me around two hours. This makes
+      it very easy to spin up, and gives a very unique type of program to optimize.</p>
+      <h2 id="interesting-optimizations">Interesting Optimizations</h2>
+      <p>There are several operations that are quite frequent, such as zeroing a cell:
+      <code>[-]</code>. This set of three instructions won't exit until the current cell is zero,
+      and this is something that comes up quite frequently. This is a trivial optimization,
+      but this idea of simplfying loops give large performance gains here. For instance, what about this set of instructions:</p>
+      <p><code>[-&gt;+++++&lt;]</code></p>
+      <p>This set of instructions will have the inner loop repeat as many times as the
+      first tape cell is not 0, which is the just the value of the tape cell. So if
+      we enter this loop with the current cell reading 5,
+      the inner loop will execute 5 times, as we subtract one from the counter every
+      iteration, then increment the next cell by 5. However, this can be simplified by
+      turning this into a multiply add to an offset. This really is just:</p>
+      <p><code>tape[currPos+1] += tape[currPos] * 5</code></p>
+      <p>Optimizing out these simple loops gives speed ups of 2x compared to naive approaches,
+      which makes them quite important here.</p>
+      <h3 id="real-example">Real Example</h3>
+      <p>Here's an example that I ran into when developing the loop simplifying pass on
+      my AST:</p>
+      <p><code>[-&gt;+&gt;++&gt;&gt;&gt;&lt;+&lt;&lt;&lt;&lt;]</code></p>
+      <p>The offsets (other than the required 1 for the induction variable) are +1 at offset 1, +2 at offset 2, and+1 at offset 4. Using these offsets, I could remove this entire loop by replacing the additions with multiplications that store at offsets, and then zeroing the memory for the induction variable. For this case, that would be:</p>
+      <p>This set of instructions, when emitted as X86-64, yields this assembly:</p>
+      <pre><code class="language-x86-64">    <code class="x86-instr">movb</code>	$1, %r10b
+    <code class="x86-instr">mulb</code>	%r10b
+    <code class="x86-instr">addb</code>	%al, 4(%rdi)
+    <code class="x86-instr">movb</code>	(%rdi), %al
+    <code class="x86-instr">movb</code>	$2, %r10b
+    <code class="x86-instr">mulb</code>        %r10b
+    <code class="x86-instr">addb</code>	%al, 2(%rdi)
+    <code class="x86-instr">movb</code>	(%rdi), %al
+    <code class="x86-instr">movb</code>	$1, %r10b
+    <code class="x86-instr">mulb</code>	%r10b
+    <code class="x86-instr">addb</code>	%al, 1(%rdi)
+    <code class="x86-instr">movb</code>	$0, (%rdi)</code></pre>
+      <p>This basically increments the offsets, then multiplies by the amount of times the induction variable will execute, then zeroes the induction variable. If the induction variable is incrementing rather than decrementing, then we also must xor it with -1 and add 1, but otherwise the logic is the same.</p>
+      <h3 id="more-we-can-do">More we can do?</h3>
+      <p>You can also perform a simple instcombine pass, which gave me a 3x speedup. This
+      is pretty intuitive since a large sequence of <code>+</code>s can be reduced into just one.</p>
+      <p>So these are great, but these are the types of optimizations that LLVM could do as
+      well. If we wrote a backend that emitted LLVM-IR, these local optimizations, as well
+      as pretty much any peephole we could think of, would be easily emitted by LLVM.
+      However, there are some optimizations that LLVM can't do natively.</p>
+      <h2 id="vectorized-scan-loops">Vectorized Scan Loops</h2>
+      <p>A type of common procedure in BF programs is a memory scan. For instance:</p>
+      <p><code>[&gt;]</code></p>
+      <p>This will constantly shift right through the tape until we find a cell with a value
+      of 0. However, this is a whole class of moves, as you can scan by any amount:</p>
+      <ul>
+      <li><code>[&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;]</code> (scans every 8 cells until it reads a 0)</li>
+      <li><code>[&lt;&lt;&lt;&lt;&lt;]</code> (scans every 5 cells to the left until it reads a 0)</li>
+      </ul>
+      <p>In some mathematical programs, such as a Tower of Hanoi implementation or
+      a Mandelbrot set, these are extremely common. Therefore, optimizations for can give
+      great speedups.</p>
+      <p>The key idea here is that rather than checking every memory cell individually,
+      we can use vector instructions to read a sequence of 32 cells at a time, and
+      then use masking to extract the first zero cell that we care about.</p>
+      <p>For memory scans, I worked with AVX256 and supported positive and negative strides of 1, 2, and 4. You could support any arbitrary stride, however you would need
+      to have up to 32 masks if the stride and number of cells you can handle with vector
+      instructions (32 to AVX-256) are relatively prime.</p>
+      <p>The steps are as follows for positive strides:</p>
+      <ol>
+      <li>Load 32 bytes from the tape starting at the pointer</li>
+      <li>Compare the 32 bytes byte-wise against a zero vector. For bytes that were 0, the resulting vector will have those bytes set to 0xFF</li>
+      <li>If the stride is 2 or 4, then also perform a byte-wise and against an appropriate mask - this zeroes everything that isn’t on a multiple we want</li>
+      <li>Use an instruction that creates a 32-bit mask from the high bits of the 32 bytes from the vector.</li>
+      <li>Count the trailing zeros in the new 32-bit mask - if there are no 1’s in the mask, then the instruction returns 32</li>
+      <li>Increment the memory pointer by the return of the instruction above.</li>
+      </ol>
+      <p>For instance, the program <code>[&gt;&gt;]</code> yields this program:</p>
+      <pre><code class="language-x86-64"><code class="x86-label">label0:</code>
+    <code class="x86-instr">cmpb</code>	$0, (%rdi)
+    <code class="x86-instr">je</code>	        label1
+    <code class="x86-instr">vpxor</code>	%xmm0, %xmm0, %xmm0
+    <code class="x86-instr">vpcmpeqb</code>	(%rdi), %ymm0, %ymm0
+    <code class="x86-instr">vpand</code>	.STRIDE2MASK(%rip), %ymm0, %ymm0
+    <code class="x86-instr">vpmovmskb</code>	%ymm0, %r10
+    <code class="x86-instr">tzcntl</code>	%r10d, %r10d
+    <code class="x86-instr">add</code>	        %r10, %rdi
+<code class="x86-label">label1:</code>
+    <code class="x86-instr">cmpb</code>	$0, (%rdi)
+    <code class="x86-instr">jne</code>	        label0</code></pre>
+      <p>This is a unique optimization that emerges from the fact that we are operating
+      on a tape cell, and the fact that it's very common makes it a good choice
+      in a language such as BF.</p>
+      <h3 id="addendum-llvm-performance">Addendum: LLVM Performance</h3>
+      <p>I also wrote an AST to LLVM backend to compare performance against my direct AST to
+      X86-64 backend. Interestingly, <strong>my compiler was as fast or faster</strong>. Overall,
+      performance was roughly similar, but for the Mandelbrot set, I was 3x faster
+      than LLVM with <code>-O3</code>. There are likely several reasons for this, but I believe
+      the main ones are:</p>
+      <ol>
+      <li>I could perform vector scan optimizations</li>
+      <li>LLVM is not tuned for monolith functions</li>
+      </ol>
+      <p>A BF program is inherently just a single function, and LLVM is not optimized for
+      reasoning about a function that is tens of thousands of instructions long, as this is
+      obviously not something that is very common in normal code! But this shows that
+      if LLVM isn't tuned for something, you can do better than it even with a
+      relatively naive compiler backend. LLVM can't solve every problem!</p>
+      <h2 id="conclusion">Conclusion</h2>
+      <p>It's interesting working on more esoteric languages, as there are unique
+      performance optimizations here that don't arise as commonly in more mainstream
+      languages, but the skills of analyzing a language and code for missing optimizations
+      is something that can easily be extended beyond this. Although, I do like working
+      on BF programs just for how simple the language is!</p>
+      <h3 id="resources">Resources</h3>
+      <p><a href="https://github.com/Stefan-Mada/bf-compiler/tree/main">My BF Compiler Implementation</a></p>      
+    </main>
+  </div>
+  <footer>
+    <div class="footer_images">
+      <a href="https://github.com/Stefan-Mada">
+        <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDBweCIgaGVpZ2h0PSI0MHB4IiB2aWV3Qm94PSIwIDAgNjAgNjAiIHZlcnNpb249IjEuMSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczp4bGluaz0iaHR0cDovL3d3dy53My5vcmcvMTk5OS94bGluayIgeG1sbnM6c2tldGNoPSJodHRwOi8vd3d3LmJvaGVtaWFuY29kaW5nLmNvbS9za2V0Y2gvbnMiPg0KICAgIDxwYXRoIGQ9Ik0wLjMzNjg3MTAzMiwzMCBDMC4zMzY4NzEwMzIsMTMuNDMxNDU2NyAxMy41NjcyMzEzLDAgMjkuODg3NzA5NywwIEM0Ni4yMDgxODgsMCA1OS40Mzg1NDgzLDEzLjQzMTQ1NjcgNTkuNDM4NTQ4MywzMCBDNTkuNDM4NTQ4Myw0Ni41Njg1NDMzIDQ2LjIwODE4OCw2MCAyOS44ODc3MDk3LDYwIEMxMy41NjcyMzEzLDYwIDAuMzM2ODcxMDMyLDQ2LjU2ODU0MzMgMC4zMzY4NzEwMzIsMzAgWiBNMC4zMzY4NzEwMzIsMzAiIGlkPSJHaXRodWIiIGZpbGw9IiMzMzMzMzMiIHNrZXRjaDp0eXBlPSJNU1NoYXBlR3JvdXAiPjwvcGF0aD4NCiAgICA8cGF0aCBkPSJNMTguMjE4NDI0NSwzMS45MzU1NTY2IEMxOS42MDY4NTA2LDM0LjQ1MDc5MDIgMjIuMjg0NTI5NSwzNi4wMTU2NzY0IDI2LjgwMDcyODcsMzYuNDQ4NTE3MyBDMjYuMTU2MTAyMywzNi45MzY1MzM1IDI1LjM4MTc4NzcsMzcuODYzMDk4NCAyNS4yNzQ5ODU3LDM4LjkzNDI2MDcgQzI0LjQ2NDQzNDgsMzkuNDU3NDc0OSAyMi44MzQ3NTA2LDM5LjYyOTY2IDIxLjU2NzQzMDMsMzkuMjMxMDY1OSBDMTkuNzkxODQ2OSwzOC42NzE3MDIzIDE5LjExMTkzNzcsMzUuMTY0MjY0MiAxNi40NTMzMzA2LDM1LjY2MzY5NTkgQzE1Ljg3NzM2MjYsMzUuNzcyMTQ0IDE1Ljk5MTc5MzMsMzYuMTUwNzYwOSAxNi40ODk1NjcsMzYuNDcyMjk5OCBDMTcuMzAwMTE3OSwzNi45OTU1MTQxIDE4LjA2Mjk4OTQsMzcuNjUwMDA3NSAxOC42NTEzNTQxLDM5LjA0MzY2IEMxOS4xMDMzNTU0LDQwLjExMzg3MSAyMC4wNTMxMzA0LDQyLjAyNTk4MTMgMjMuMDU2OTM2OSw0Mi4wMjU5ODEzIEMyNC4yNDg5MjM2LDQyLjAyNTk4MTMgMjUuMDg0MjY3OSw0MS44ODMyODY1IDI1LjA4NDI2NzksNDEuODgzMjg2NSBDMjUuMDg0MjY3OSw0MS44ODMyODY1IDI1LjEwNzE1NCw0NC42MTQ0NjQ5IDI1LjEwNzE1NCw0NS42NzYxMTQyIEMyNS4xMDcxNTQsNDYuOTAwNDM1NSAyMy40NTA3NjkzLDQ3LjI0NTc1NjkgMjMuNDUwNzY5Myw0Ny44MzQ2MTA4IEMyMy40NTA3NjkzLDQ4LjA2NzY3OSAyMy45OTkwODMyLDQ4LjA4OTU1ODggMjQuNDM5NjQxNSw0OC4wODk1NTg4IEMyNS4zMTAyNjg1LDQ4LjA4OTU1ODggMjcuMTIyMDg4Myw0Ny4zNjQ2NjkzIDI3LjEyMjA4ODMsNDYuMDkxODMxNyBDMjcuMTIyMDg4Myw0NS4wODA2MDEyIDI3LjEzODI5OTMsNDEuNjgwNjU5OSAyNy4xMzgyOTkzLDQxLjA4NjA5ODIgQzI3LjEzODI5OTMsMzkuNzg1NjczIDI3LjgzNzI4MDMsMzkuMzczNzYwNyAyNy44MzcyODAzLDM5LjM3Mzc2MDcgQzI3LjgzNzI4MDMsMzkuMzczNzYwNyAyNy45MjQwNTcsNDYuMzE1Mzg2OSAyNy42NzA0MDIyLDQ3LjI0NTc1NjkgQzI3LjM3Mjg4MjMsNDguMzM5NzUwNCAyNi44MzYwMTE1LDQ4LjE4NDY4ODcgMjYuODM2MDExNSw0OC42NzI3MDQ5IEMyNi44MzYwMTE1LDQ5LjM5ODU0NTggMjkuMDE2ODcwNCw0OC44NTA1OTc4IDI5LjczOTY5MTEsNDcuMjU3MTcyNSBDMzAuMjk4NDk0NSw0Ni4wMTY2NzkxIDMwLjA1NDM3NTYsMzkuMjA3MjgzNCAzMC4wNTQzNzU2LDM5LjIwNzI4MzQgTDMwLjY1MDM2OSwzOS4xOTQ5MTY1IEMzMC42NTAzNjksMzkuMTk0OTE2NSAzMC42ODM3NDQ2LDQyLjMxMjMyMjIgMzAuNjYzNzE5Miw0My43MzczNjc1IEMzMC42NDI3NDAyLDQ1LjIxMjgzMTcgMzAuNTQyNjEzNCw0Ny4wNzkyNzk3IDMxLjQyMDg2OTIsNDcuOTU5MjMwOSBDMzEuOTk3NzkwNyw0OC41Mzc2MjA1IDMzLjg2ODczMyw0OS41NTI2NTYyIDMzLjg2ODczMyw0OC42MjUxNCBDMzMuODY4NzMzLDQ4LjA4NTc1MzYgMzIuODQzNjI0NSw0Ny42NDI0NDg1IDMyLjg0MzYyNDUsNDYuMTgzMTU2NCBMMzIuODQzNjI0NSwzOS40Njg4OTA1IEMzMy42NjE4MDQyLDM5LjQ2ODg5MDUgMzMuNTM4NzkxMSw0MS42NzY4NTQ3IDMzLjUzODc5MTEsNDEuNjc2ODU0NyBMMzMuNTk4ODY3Myw0NS43Nzg4NTQ0IEMzMy41OTg4NjczLDQ1Ljc3ODg1NDQgMzMuNDE4NjM4OSw0Ny4yNzMzNDQ2IDM1LjIxOTAxNTYsNDcuODk5Mjk5MSBDMzUuODU0MTA2MSw0OC4xMjA5NTE3IDM3LjIxMzkyNDUsNDguMTgwODgzNSAzNy4yNzc4MTUsNDcuODA4OTI1NyBDMzcuMzQxNzA1NSw0Ny40MzYwMTY3IDM1LjY0MDUwMjEsNDYuODgxNDA5NiAzNS42MjUyNDQ2LDQ1LjcyMzY3OTEgQzM1LjYxNTcwODgsNDUuMDE3ODE1NSAzNS42NTY3MTMxLDQ0LjYwNTkwMzIgMzUuNjU2NzEzMSw0MS41Mzc5NjUxIEMzNS42NTY3MTMxLDM4LjQ3MDAyNyAzNS4yNDM4MDg5LDM3LjMzNjA3OSAzMy44MDQ4NDI2LDM2LjQzMjM0NTMgQzM4LjI0NTcwODIsMzUuOTc2NjczMiA0MC45OTM5NTI3LDM0Ljg4MDY4MiA0Mi4zMzM3NDU4LDMxLjk0NTA2OTUgQzQyLjQzODM2MTksMzEuOTQ4NDk2NiA0Mi44NzkxNDkxLDMwLjU3Mzc3NDIgNDIuODIxOTgzNSwzMC41NzQyNDgyIEM0My4xMjIzNjQyLDI5LjQ2NTk4NTMgNDMuMjg0NDc0NCwyOC4xNTUwOTU3IDQzLjMxNjg5NjQsMjYuNjAyNTc2NCBDNDMuMzA5MjY3NywyMi4zOTMwNzk5IDQxLjI4OTU2NTQsMjAuOTA0Mjk3NSA0MC45MDE0NTQ2LDIwLjIwNTA5MyBDNDEuNDczNjA4MiwxNy4wMTgyNDI1IDQwLjgwNjA5NTYsMTUuNTY3NTEyMSA0MC40OTYxNzkxLDE1LjA2OTk4MjkgQzM5LjM1MTg3MTksMTQuNjYzNzc4NCAzNi41MTQ5NDM1LDE2LjExNDUwODggMzQuOTY1MzYwOCwxNy4xMzcxNTQ4IEMzMi40MzgzNDksMTYuMzk5ODk4NCAyNy4wOTgyNDg2LDE2LjQ3MTI0NTggMjUuMDk1NzEwOSwxNy4zMjc0MTQ2IEMyMS40MDA1NTIyLDE0LjY4NzU2MDggMTkuNDQ1Njk0LDE1LjA5MTg2MjggMTkuNDQ1Njk0LDE1LjA5MTg2MjggQzE5LjQ0NTY5NCwxNS4wOTE4NjI4IDE4LjE4MjE4ODEsMTcuMzUxMTk3IDE5LjExMTkzNzcsMjAuNjU2OTU5OCBDMTcuODk2MTExMywyMi4yMDI4MjAxIDE2Ljk5MDIwMTQsMjMuMjk2ODEzNiAxNi45OTAyMDE0LDI2LjE5NjM3MTggQzE2Ljk5MDIwMTQsMjcuODI5NzUxNiAxNy4xODI4MjY0LDI5LjI5MTg5NzYgMTcuNjE3NjYzMiwzMC41Njg1NDA0IEMxNy41NjQzNTc3LDMwLjU2ODQwOTMgMTguMjAwODQ5MywzMS45MzU5Nzc3IDE4LjIxODQyNDUsMzEuOTM1NTU2NiBaIE0xOC4yMTg0MjQ1LDMxLjkzNTU1NjYiIGlkPSJQYXRoIiBmaWxsPSIjRkZGRkZGIiBza2V0Y2g6dHlwZT0iTVNTaGFwZUdyb3VwIj48L3BhdGg+DQogICAgPHBhdGggZD0iTTU5LjQzODU0ODMsMzAgQzU5LjQzODU0ODMsNDYuNTY4NTQzMyA0Ni4yMDgxODgsNjAgMjkuODg3NzA5Nyw2MCBDMjMuODM0ODMwOCw2MCAxOC4yMDY5OTU0LDU4LjE1MjUxMzQgMTMuNTIxNjE0OCw1NC45ODI3NzU0IEw0Ny4zODE4MzYxLDUuODE5NDExMDMgQzU0LjY5MzczNDEsMTEuMjgwNjUwMyA1OS40Mzg1NDgzLDIwLjA3Nzc5NzMgNTkuNDM4NTQ4MywzMCBaIE01OS40Mzg1NDgzLDMwIiBpZD0icmVmbGVjIiBmaWxsLW9wYWNpdHk9IjAuMDgiIGZpbGw9IiMwMDAwMDAiIHNrZXRjaDp0eXBlPSJNU1NoYXBlR3JvdXAiPjwvcGF0aD4NCjwvc3ZnPg==">
+      </a>
+      <a href="https://www.linkedin.com/in/stefan-mada/">
+        <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDBweCIgaGVpZ2h0PSI0MHB4IiB2aWV3Qm94PSIwIDAgNjAgNjAiIHZlcnNpb249IjEuMSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczp4bGluaz0iaHR0cDovL3d3dy53My5vcmcvMTk5OS94bGluayIgeG1sbnM6c2tldGNoPSJodHRwOi8vd3d3LmJvaGVtaWFuY29kaW5nLmNvbS9za2V0Y2gvbnMiPg0KICAgIDxwYXRoIGQ9Ik0wLjQ0OTE2MTM3NiwzMCBDMC40NDkxNjEzNzYsMTMuNDMxNDU2NyAxMy42Nzk1MjE3LDAgMzAsMCBDNDYuMzIwNDc4MywwIDU5LjU1MDgzODYsMTMuNDMxNDU2NyA1OS41NTA4Mzg2LDMwIEM1OS41NTA4Mzg2LDQ2LjU2ODU0MzMgNDYuMzIwNDc4Myw2MCAzMCw2MCBDMTMuNjc5NTIxNyw2MCAwLjQ0OTE2MTM3Niw0Ni41Njg1NDMzIDAuNDQ5MTYxMzc2LDMwIFogTTAuNDQ5MTYxMzc2LDMwIiBmaWxsPSIjMDA3QkI2IiBza2V0Y2g6dHlwZT0iTVNTaGFwZUdyb3VwIj48L3BhdGg+DQogICAgPHBhdGggZD0iTTIyLjQ2ODAzOTIsMjMuNzA5ODE0NCBMMTUuNzgwODM2NiwyMy43MDk4MTQ0IEwxNS43ODA4MzY2LDQ0LjEzNjk1MzcgTDIyLjQ2ODAzOTIsNDQuMTM2OTUzNyBMMjIuNDY4MDM5MiwyMy43MDk4MTQ0IFogTTIyLjQ2ODAzOTIsMjMuNzA5ODE0NCIgaWQ9IlBhdGgiIGZpbGw9IiNGRkZGRkYiIHNrZXRjaDp0eXBlPSJNU1NoYXBlR3JvdXAiPjwvcGF0aD4NCiAgICA8cGF0aCBkPSJNMjIuOTA4NDc1MywxNy4zOTA4NzYxIEMyMi44NjUwNzI3LDE1LjM4ODAwODEgMjEuNDU2MjkxNywxMy44NjI1MDQgMTkuMTY4NjQxOCwxMy44NjI1MDQgQzE2Ljg4MDk5MTgsMTMuODYyNTA0IDE1LjM4NTQwNTcsMTUuMzg4MDA4MSAxNS4zODU0MDU3LDE3LjM5MDg3NjEgQzE1LjM4NTQwNTcsMTkuMzUyMjU3OSAxNi44MzY3ODgsMjAuOTIxNjg4NiAxOS4wODE4MzY2LDIwLjkyMTY4ODYgTDE5LjEyNDU3MTQsMjAuOTIxNjg4NiBDMjEuNDU2MjkxNywyMC45MjE2ODg2IDIyLjkwODQ3NTMsMTkuMzUyMjU3OSAyMi45MDg0NzUzLDE3LjM5MDg3NjEgWiBNMjIuOTA4NDc1MywxNy4zOTA4NzYxIiBpZD0iUGF0aCIgZmlsbD0iI0ZGRkZGRiIgc2tldGNoOnR5cGU9Ik1TU2hhcGVHcm91cCI+PC9wYXRoPg0KICAgIDxwYXRoIGQ9Ik00Ni41ODQ2NTAyLDMyLjQyNDY1NjMgQzQ2LjU4NDY1MDIsMjYuMTUwMzIyNiA0My4yODU2NTM0LDIzLjIzMDE0NTYgMzguODg1MTY1OCwyMy4yMzAxNDU2IEMzNS4zMzQ3MDExLDIzLjIzMDE0NTYgMzMuNzQ1MDk4MywyNS4yMTI4MTI4IDMyLjg1NzU0ODksMjYuNjAzNjg5NiBMMzIuODU3NTQ4OSwyMy43MTAzNTY3IEwyNi4xNjk1NDQ5LDIzLjcxMDM1NjcgQzI2LjI1NzY4NTYsMjUuNjI3MTMzOCAyNi4xNjk1NDQ5LDQ0LjEzNzQ5NiAyNi4xNjk1NDQ5LDQ0LjEzNzQ5NiBMMzIuODU3NTQ4OSw0NC4xMzc0OTYgTDMyLjg1NzU0ODksMzIuNzI5Mjk2MSBDMzIuODU3NTQ4OSwzMi4xMTg3OTYzIDMyLjkwMDk1MTQsMzEuNTA5Nzg3NyAzMy4wNzc3NjY5LDMxLjA3MjY4OTggQzMzLjU2MTA3MTMsMjkuODUzMDQ1OCAzNC42NjE0OTM3LDI4LjU5MDI4ODUgMzYuNTA4OTc0NywyOC41OTAyODg1IEMzOC45Mjk3NzAzLDI4LjU5MDI4ODUgMzkuODk3NDQ3NiwzMC40NjM0MTAxIDM5Ljg5NzQ0NzYsMzMuMjA4NDIyNiBMMzkuODk3NDQ3Niw0NC4xMzY5NTM3IEw0Ni41ODQzODMyLDQ0LjEzNjk1MzcgTDQ2LjU4NDY1MDIsMzIuNDI0NjU2MyBaIE00Ni41ODQ2NTAyLDMyLjQyNDY1NjMiIGlkPSJQYXRoIiBmaWxsPSIjRkZGRkZGIiBza2V0Y2g6dHlwZT0iTVNTaGFwZUdyb3VwIj48L3BhdGg+DQogICAgPHBhdGggZD0iTTU5LjU1MDgzODYsMzAgQzU5LjU1MDgzODYsNDYuNTY4NTQzMyA0Ni4zMjA0NzgzLDYwIDMwLDYwIEMyMy45NDcxMjEyLDYwIDE4LjMxOTI4NTgsNTguMTUyNTEzNCAxMy42MzM5MDUxLDU0Ljk4Mjc3NTQgTDQ3LjQ5NDEyNjQsNS44MTk0MTEwMyBDNTQuODA2MDI0NSwxMS4yODA2NTAzIDU5LjU1MDgzODYsMjAuMDc3Nzk3MyA1OS41NTA4Mzg2LDMwIFogTTU5LjU1MDgzODYsMzAiIGlkPSJyZWZsZWMiIGZpbGwtb3BhY2l0eT0iMC4wOCIgZmlsbD0iIzAwMDAwMCIgc2tldGNoOnR5cGU9Ik1TU2hhcGVHcm91cCI+PC9wYXRoPg0KPC9zdmc+">
+      </a>
+    </div>
+  </footer>
+</body>
