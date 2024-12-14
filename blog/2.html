@@ -68,18 +68,18 @@
       <p><code>[-&gt;+&gt;++&gt;&gt;&gt;&lt;+&lt;&lt;&lt;&lt;]</code></p>
       <p>The offsets (other than the required 1 for the induction variable) are +1 at offset 1, +2 at offset 2, and+1 at offset 4. Using these offsets, I could remove this entire loop by replacing the additions with multiplications that store at offsets, and then zeroing the memory for the induction variable. For this case, that would be:</p>
       <p>This set of instructions, when emitted as X86-64, yields this assembly:</p>
-      <pre><code class="language-x86-64">    <code class="x86-instr">movb</code>	$1, %r10b
-    <code class="x86-instr">mulb</code>	%r10b
-    <code class="x86-instr">addb</code>	%al, 4(%rdi)
-    <code class="x86-instr">movb</code>	(%rdi), %al
-    <code class="x86-instr">movb</code>	$2, %r10b
-    <code class="x86-instr">mulb</code>        %r10b
-    <code class="x86-instr">addb</code>	%al, 2(%rdi)
-    <code class="x86-instr">movb</code>	(%rdi), %al
-    <code class="x86-instr">movb</code>	$1, %r10b
-    <code class="x86-instr">mulb</code>	%r10b
-    <code class="x86-instr">addb</code>	%al, 1(%rdi)
-    <code class="x86-instr">movb</code>	$0, (%rdi)</code></pre>
+      <pre><code class="language-x86-64"><code class="x86-instr">movb</code>	$1, %r10b
+<code class="x86-instr">mulb</code>	%r10b
+<code class="x86-instr">addb</code>	%al, 4(%rdi)
+<code class="x86-instr">movb</code>	(%rdi), %al
+<code class="x86-instr">movb</code>	$2, %r10b
+<code class="x86-instr">mulb</code>	%r10b
+<code class="x86-instr">addb</code>	%al, 2(%rdi)
+<code class="x86-instr">movb</code>	(%rdi), %al
+<code class="x86-instr">movb</code>	$1, %r10b
+<code class="x86-instr">mulb</code>	%r10b
+<code class="x86-instr">addb</code>	%al, 1(%rdi)
+<code class="x86-instr">movb</code>	$0, (%rdi)</code></pre>
       <p>This basically increments the offsets, then multiplies by the amount of times the induction variable will execute, then zeroes the induction variable. If the induction variable is incrementing rather than decrementing, then we also must xor it with -1 and add 1, but otherwise the logic is the same.</p>
       <h3 id="more-we-can-do">More we can do?</h3>
       <p>You can also perform a simple instcombine pass, which gave me a 3x speedup. This
@@ -117,17 +117,17 @@
       </ol>
       <p>For instance, the program <code>[&gt;&gt;]</code> yields this program:</p>
       <pre><code class="language-x86-64"><code class="x86-label">label0:</code>
-    <code class="x86-instr">cmpb</code>	$0, (%rdi)
-    <code class="x86-instr">je</code>	        label1
+    <code class="x86-instr">cmpb</code>		$0, (%rdi)
+    <code class="x86-instr">je</code>		label1
     <code class="x86-instr">vpxor</code>	%xmm0, %xmm0, %xmm0
     <code class="x86-instr">vpcmpeqb</code>	(%rdi), %ymm0, %ymm0
     <code class="x86-instr">vpand</code>	.STRIDE2MASK(%rip), %ymm0, %ymm0
     <code class="x86-instr">vpmovmskb</code>	%ymm0, %r10
     <code class="x86-instr">tzcntl</code>	%r10d, %r10d
-    <code class="x86-instr">add</code>	        %r10, %rdi
+    <code class="x86-instr">add</code>		%r10, %rdi
 <code class="x86-label">label1:</code>
-    <code class="x86-instr">cmpb</code>	$0, (%rdi)
-    <code class="x86-instr">jne</code>	        label0</code></pre>
+    <code class="x86-instr">cmpb</code>		$0, (%rdi)
+    <code class="x86-instr">jne</code>		label0</code></pre>
       <p>This is a unique optimization that emerges from the fact that we are operating
       on a tape cell, and the fact that it's very common makes it a good choice
       in a language such as BF.</p>
