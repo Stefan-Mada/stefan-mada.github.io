@@ -1,18 +1,19 @@
 <!doctype html>
 <meta charset="utf-8">
-<link rel="stylesheet" href="static/main.css">
+<link rel="stylesheet" href="/static/main.css">
 <link rel="icon" href="/static/logo.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/Microsoft/vscode/extensions/markdown-language-features/media/highlight.css">
 
 <title>
-  Stefan Mada
+  Loop Unrolling: GPU vs CPU
 </title>
 
 <body>
   <div class="main_content">
     <header>
       <div class="site_info">
-        <img height="64px" src="static/logo.png">
+        <img height="64px" src="/static/logo.png">
         <div class="title_info">
           <h1>Stefan Mada</h1>
           <p>Languages, Compilers, and more!</p>
@@ -24,41 +25,109 @@
       </nav>
     </header>
     <main>
-      <p>
-        Hey! I'm Stefan. Welcome to my blog. I work primarily on compiler performance verification work, and
-        I write about things that generally interest me at the time. Enjoy!
-      </p>
-      <h1>My Posts</h1>
-      <div class="post">
-        <h2>Exploring Suboptimal Lattice Transfer Functions in LLVM with KnownBits</h2>
-        <p class="post_date">December 5, 2024</p>
-        <p> Transfer functions for abstract lattices are what allows many analyses such as LLVM's Known
-          Bits analysis to give correct information. However, by operating in the abstract domain, these
-          transfer functions leave possible information on the table. I explore lattices, concretization,
-          abstraction, and optimality through the example of saturated signed addition.
-        </p>
-        <a href="/blog/3" class="read_more">Read More</a>
-      </div>
-      <div class="post">
-        <h2>Unique Brainfuck Optimizations</h2>
-        <p class="post_date">November 10, 2024</p>
-        <p>Brainfuck is an infamous esoteric language, but there are unique optimizations that can be performed on
-          it, such as vector scan optimizations for loops like <code>[&gt;&gt;]</code>, that can improve performance 
-          beyond what an LLVM backend can achieve natively.
-        </p>
-        <a href="/blog/2" class="read_more">Read More</a>
-      </div>
-      <div class="post">
-        <h2>Loop Unrolling: GPU vs CPU</h2>
-        <p class="post_date">June 17, 2024</p>
-        <p>Loop unrolling is an essential optimization performed by compilers,
-          and it is also essential on both CPUs and GPUs alike. However, due to
-          the differences in architecture, the potential benefits of loop unrolling
-          are greater on GPUs than on CPUs, especially due to load batching.
-        </p>
-        <a href="/blog/1" class="read_more">Read More</a>
-      </div>
+      <h1 id="how-loop-unrolling-is-very-different-on-cuda-vs-x86">Loop Unrolling: GPU vs CPU</h1>
+      <p><a href="https://en.wikipedia.org/wiki/CUDA">CUDA</a> is parallel computing platform from
+        Nvidia that allows using GPUs for general purpose processing. CUDA C++ is a
+        frontend to access this capability provided by Nvidia. It is a programming
+        language that extends C++ to compile code that runs both on the CPU and the
+        GPU.</p>
+        <p>For CUDA C++, the compilation pipeline follows two paths: one for host code,
+        which runs on the CPU, and one for device code, which runs on the GPU. For this,
+        I'll just focus on the process for device code. The code first has the C++
+        preprocessor run. Then, middle end optimizations are performed by <code>nvvm</code>, which
+        spits out PTX assembly, a virtual instruction set for Nvidia GPUs. Then,
+        ptxas runs on the PTX assembly to generate <code>.cubin</code> files, which contain GPU
+        specific instructions. To read more about this, read Chapter 4 of the
+        <a href="https://docs.nvidia.com/cuda/archive/9.0/pdf/CUDA_Compiler_Driver_NVCC.pdf">CUDA NVCC Handbook</a>.</p>
+        <p>For the purpose of this blog post, we are only concerned with <code>nvvm</code>. <code>nvvm</code> is the
+        middle end optimizer, which used NVVM IR. This is just a subset of LLVM IR, as all
+        NVVM IR is valid LLVM IR. This portion of the compile runs standard LLVM optimization
+        passes as well as others to generate more performant code. You can read more about the
+        <a href="https://docs.nvidia.com/cuda/nvvm-ir-spec/index.html">NVVM IR Spec</a> if curious.</p>
+        <p>One of the passes here that is common is loop unrolling. Just briefly,
+        loop unrolling is an optimization where the inner body of a loop is
+        repeated with the induction variable not having to increment as much.
+        Runtime loop unrolling is a subset where the upper bound is not known
+        at compilation time. Here is an example below:</p>
+        <pre><code class="language-c++"><span class="hljs-keyword">for</span>(<span class="hljs-type">int</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">100</span>; ++i)
+  sum += val[i];</code></pre>
+        <p>After a 4x runtime loop unrolling:</p>
+        <pre><code class="language-c++"><span class="hljs-type">int</span> i = <span class="hljs-number">0</span>;
+<span class="hljs-keyword">for</span>(; i &lt; <span class="hljs-number">100</span>; i += <span class="hljs-number">4</span>)
+  sum += val[i];
+  sum += val[i+<span class="hljs-number">1</span>];
+  sum += val[i+<span class="hljs-number">2</span>];
+  sum += val[i+<span class="hljs-number">3</span>];
+<span class="hljs-keyword">for</span>(; i &lt; <span class="hljs-number">100</span>; ++i)
+  sum += val[i];</code></pre>
+        <h2 id="loop-unrolling-on-a-cpu">Loop Unrolling on a CPU</h2>
+        <p>On a CPU, loop unrolling is profitable from the fact that
+        we can reduce the amount of times we increment the induction variable
+        <code>i</code>, which can yield mild speedups. This is an easy win that is profitable
+        as long as we don't run out of registers to store temporaries while
+        loop unrolling, or we don't blow up the size of the instructions to
+        a point that we can have an instruction cache miss. This limits
+        the upperbound that we can unroll by.</p>
+        <p>Unrolling also allows loads to be completed in parallel due to the
+        nature of out of order processors. So above, the four loads can be
+        pipelined, and even though the overall latency is still large if
+        none are in the cache, the throughput increases by 4x if no load
+        would put the other values in the cache.</p>
+        <p>This means there is quite a large performance gains to be had with
+        loop unrolling on the CPU.</p>
+        <h2 id="loop-unrolling-on-a-gpu">Loop Unrolling on a GPU</h2>
+        <p>On a GPU, the story is similar. We still have the same small wins
+        as above with not incrementing the induction variable, but the parallel
+        nature of GPUs makes loop unrolling even more beneficial with loads.</p>
+        <p>How is this possible?</p>
+        <p>This comes in the difference between CPU and GPU architectures. Let's
+        look at the above example we had where we had to load out of a <code>val</code>
+        array. Let's assume that one memory access will not allow the subsequent
+        memory access to be in cache(if they are sparse or random accesses).
+        For the CPU, with a 4x unroll as shown above, we would get a roughly
+        4x throughput improvement.</p>
+        <p>However, for GPUs, latency is an even bigger problem as global memory
+        has a much higher latency than memory accesses from a CPU. So the
+        ability to reduce latency as shown in loop unrolling is actually profitable
+        at even higher unroll counts than for CPUs because of the latency. By
+        default, LLVM will
+        <a href="https://github.com/llvm/llvm-project/blob/c03fc929ffc1ee5439bf547e5f0bf5319c818982/llvm/lib/Transforms/Scalar/LoopUnrollPass.cpp#L140">only unroll up to 8x</a>
+        for runtime loops. However, I have seen 16x unrolls for GPUs by default. It
+        isn't hard to imagine that because of how much worse latency is, 32x unrolls may also
+        be profitable on GPUs in a way that CPUs would no longer benefit.</p>
+        <p>To elaborate on the above, GPU warps can execute multiple loads at once until it hits
+        a use. The time spent waiting for the result of a load is known as a <strong>long scoreboard stall</strong>.
+        Unrolling allows avoiding these long scoreboard stalls. However, even if you hit a scoreboard stall,
+        the warp scheduler will switch to executing another warp, allowing the latency from the memory load
+        to be hidden. This is another reason why larger unroll factors can be profitable.</p>
+        <p>Of course, there are drawbacks here. If you unroll too much, you can reduce performance
+        by 50% or more due to the nature of GPU warp execution, in a way that doesn't come up as often
+        on CPUs. Unrolling will necessarily increase register pressure, but because concurrent threads
+        share registers, a small increase in register use that bumps up register pressure can decrease
+        occupancy significantly, leading to significant performance degradation.</p>
+        <p>Overall, GPU runtime unrolling has higher runtime performance opportunities with similarly
+        larger performance degradation risks, which one needs to carefully work around when working
+        with GPU code.</p>
+        <h2 id="conclusion">Conclusion</h2>
+        <p>Overall, loop unrolling is very profitable for both CPU and GPU code
+        alike, but the unique design of GPU architectures make it an even more
+        profitable optimization on GPUs with higher risks in case of unrolling too
+        much.</p>
+        <h3 id="resources">Resources</h3>
+        <p><a href="https://docs.nvidia.com/cuda/archive/9.0/pdf/CUDA_Compiler_Driver_NVCC.pdf">CUDA NVCC Handbook</a></p>
+        <p><a href="https://docs.nvidia.com/cuda/nvvm-ir-spec/index.html">NVVM IR Spec</a></p>
+        <p><a href="https://github.com/llvm/llvm-project/blob/c03fc929ffc1ee5439bf547e5f0bf5319c818982/llvm/lib/Transforms/Scalar/LoopUnrollPass.cpp#L140">LLVM Runtime Unroll Upper Bound</a></p>        
     </main>
+    <aside>
+      <h2>Comments</h2>
+      <script src="https://utteranc.es/client.js"
+        repo="Stefan-Mada/stefan-mada.github.io"
+        issue-term="pathname"
+        theme="github-dark-orange"
+        crossorigin="anonymous"
+        async>
+      </script>
+    </aside>
   </div>
   <footer>
     <div class="footer_images">
